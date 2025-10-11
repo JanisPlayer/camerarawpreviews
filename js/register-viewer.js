@@ -30,6 +30,7 @@ if (OCA.Viewer) {
 		group: 'media',
 		mimes: [
 			'image/x-dcraw',
+			'image/avif'
 		],
 		component: RAWViewer,
 	})

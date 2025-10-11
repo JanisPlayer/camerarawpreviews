@@ -18,5 +18,8 @@
         <php min-version="8.1"></php>
         <nextcloud min-version="28" max-version="31"/>
     </dependencies>
+    <commands>
+        <command>OCA\CameraRawPreviews\Command\PatchApps</command>
+    </commands>
     <types><filesystem/></types>
 </info>

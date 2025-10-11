@@ -13,6 +13,7 @@ use OCP\IImage;
 use OCP\Image;
 use OCP\Lock\LockedException;
 use Psr\Log\LoggerInterface;
+use OCP\IConfig;
 
 class RawPreviewBase
 {
@@ -21,9 +22,11 @@ class RawPreviewBase
     protected $logger;
     protected $appName;
     protected $tmpFiles = [];
+    protected $config;
 
-    public function __construct(LoggerInterface $logger)
+    public function __construct(IConfig $config, LoggerInterface $logger)
     {
+        $this->config = $config;
         $this->logger = $logger;
         $this->appName = 'camerarawpreviews';
     }
@@ -33,7 +36,7 @@ class RawPreviewBase
      */
     public function getMimeType(): string
     {
-        return '/^((image\/x-dcraw)|(image\/x-indesign))(;+.*)*$/';
+        return '/^((image\/x-dcraw)|(image\/x-indesign)|(image\/avif))(;+.*)*$/';
     }
 
     /**
@@ -58,10 +61,13 @@ class RawPreviewBase
             return null;
         }
 
+        if (exif_imagetype($localPath) === IMAGETYPE_AVIF) {
+            return $this->getAVIFPreview($localPath, $maxX, $maxY);
+        }
+
         try {
             $tagData = $this->getBestPreviewTag($localPath);
             $previewTag = $tagData['tag'];
-
 
             if ($previewTag === 'SourceFile') {
                 // load the original file as fallback when TIFF has no preview embedded
@@ -253,5 +259,121 @@ class RawPreviewBase
         }
 
         $this->tmpFiles = [];
+    }
+
+    private function getAVIFPreview(string $imagePath, int $maxX, int $maxY): ?IImage
+    {
+        //Tried using GD for rotation, but it's not needed as imagick detects it correctly.
+        /*
+        if (!(imagetypes() & IMG_AVIF)) {
+            $this->logger->debug('OC_Image->loadFromFile, AVIF images not supported: ' . $imagePath, ['app' => 'core']);
+            return null;
+        }
+
+        $gdImage = @imagecreatefromavif($imagePath);
+        if (!$gdImage) {
+            $this->logger->warning('Failed to create image from AVIF: ' . $imagePath, ['app' => $this->appName]);
+            return null;
+        }
+
+        // Optional: apply rotation from irot box
+        $fp = fopen($imagePath, 'rb');
+        if ($fp) {
+            $data = fread($fp, 512);
+            fclose($fp);
+
+            if ($data !== false) {
+                $pos = strpos($data, 'irot');
+                if ($pos !== false && ($pos + 4 < strlen($data))) {
+                    $rotationByte = ord($data[$pos + 4]);
+                    $rotation = match ($rotationByte) {
+                        1 => 90,
+                        2 => 180,
+                        3 => 270,
+                        default => 0,
+                    };
+                    if ($rotation !== 0 && function_exists('imagerotate')) {
+                        $rotated = imagerotate($gdImage, $rotation, 0);
+                        if ($rotated) {
+                            imagedestroy($gdImage);
+                            $gdImage = $rotated;
+                        }
+                    }
+                }
+            }
+        }
+
+        // OCP\Image convert
+        ob_start();
+        imagejpeg($gdImage, null, 90);
+        $imageData = ob_get_clean();
+        imagedestroy($gdImage);
+
+        $image = new \OCP\Image();
+        $image->loadFromData($imageData);
+        $image->scaleDownToFit($maxX, $maxY);
+        if (!$image->valid()) {
+            $this->logger->warning('Invalid OCP image created from AVIF: ' . $imagePath, ['app' => $this->appName]);
+            return null;
+        }
+
+        return $image;
+        */
+
+        try {
+            $imagick = new \Imagick($imagePath);
+            $imagick->autoOrient();
+            $format = $this->getPreviewFormat();
+            $imagick->setImageFormat($format);
+            $imagick->setImageCompressionQuality($this->getQuality($format));
+
+            $image = new \OCP\Image();
+            $image->loadFromData($imagick->getImageBlob());
+            $imagick->clear();
+
+            if (!$image->valid()) {
+                $this->logger->warning('Invalid OCP image created from AVIF: ' . $imagePath, ['app' => $this->appName]);
+                return null;
+            }
+
+            $image->scaleDownToFit($maxX, $maxY);
+            return $image;
+        } catch (\Exception $e) {
+            $this->logger->warning('Failed to process AVIF with Imagick: ' . $e->getMessage(), [
+                'app' => $this->appName,
+                'file' => $imagePath,
+            ]);
+            return null;
+        }
+    }
+
+    protected function getQuality(string $format): int
+    {
+        if ($format === 'jpg') {
+            $format = 'jpeg_quality';
+        }
+
+        switch ($format) {
+            case 'jpg':
+                $format = 'jpeg_quality';
+                break;
+            case 'webp':
+                $format = 'webp_quality';
+                break;
+            case 'avif':
+                $format = 'avif_quality';
+                break;
+            default:
+                $format = 'jpeg_quality';
+                break;
+        }
+
+        $quality = (int) $this->config->getAppValue('core', $format, '90');
+        return min(100, max(10, $quality));
+    }
+
+    protected function getPreviewFormat(): string
+    {
+        return $this->config->getSystemValueString('preview_format', '');
     }
 }
